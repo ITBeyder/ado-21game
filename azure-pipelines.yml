@@ -1,0 +1,103 @@
+name: 1.2$(Rev:.r)
+resources:
+  repositories:
+    - repository: games
+      source: games
+      type: git
+      name: itay-devops-tools/games
+      trigger: none
+    - repository: itay-devops-tools
+      type: git
+      name: itay-devops-tools/itay-devops-tools
+      ref: master
+# Pre-Run Pipeline Parameters user can choose.
+parameters:
+  - name: phase
+    displayName: "Pipeline Job:"
+    type: string
+    default: build_deploy
+    values:
+      - build_deploy
+      - build
+      - deploy
+      - docker
+  - name: deployVersion
+    displayName: "Deploy Version: Ex: 1.1.1-branchName"
+    type: string
+    default: 'EnterHere'
+  - name: environment
+    displayName: "Environment:"
+    type: string
+    default: 'dev'
+    values:
+      - 'dev'
+      - 'test'
+      - 'prod'
+  - name: projectType
+    displayName: "Project Type:"
+    type: string
+    default: 'nodejs'
+    values:
+      - 'nodejs'
+      - 'python'
+      - 'java'
+# Pipelibe Variables
+variables:
+  - template: variables/${{ parameters.environment }}-variables.yaml@itay-devops-tools
+  - template: variables/global-variables.yaml@itay-devops-tools
+  - name: appName
+    value: games
+  # - name: skipTests
+  #   ${{ if eq(parameters.runTests, 'true') }}:
+  #     value: '-DskipTests=false'
+  #   ${{ else }}:
+  #     value: '-DskipTests=true'
+  - name: version
+    ${{ if eq(parameters.phase, 'deploy') }}:
+      value: ${{ parameters.deployVersion }}
+    ${{ else }}:
+      value: '$(Build.BuildNumber)-$(Build.SourceBranchName)'
+# Agent that will run the Pipeline Jobs
+pool:
+  name: '$(agentPool)'
+# Stages the Piepline will Do.
+stages:
+# ---------- Build Nodejs/Java/Python Project Stage ------------#
+  - stage: BuildStage
+    condition: contains('${{ parameters.phase }}', 'build')
+    displayName: Build stage
+    jobs:            
+        - template: jobs/buildproject.yaml@itay-devops-tools
+          parameters:
+            msrepo: games
+            devopsrepo: itay-devops-tools
+# ---------- Copy Files Stage ------------#
+#   - stage: copyStatic
+#     condition: or ( succeeded('BuildStage') , and ( succeeded('BuildStage'), eq(variables['Build.Reason'], 'Schedule') ) )
+#     displayName: copyStatic stage
+#     jobs:
+#         - template: jobs/copyStatic-sched.yml@itay-devops-tools 
+# ---------- Upload Final Artifacts Stage ------------#
+  - stage: uploadArtifacts
+    condition: succeeded('BuildStage')
+    displayName: uploadArtifacts stage
+    jobs:
+      - template: jobs/uploadArtifacts.yml@itay-devops-tools
+# ---------- Create Docker Image Stage ------------#
+#   - ${{ if ne(variables.isPR, 'True') }}:
+  - stage: DockerStage
+    condition: and ( succeeded('BuildStage'), not(failed('CopyStage')), contains('${{ parameters.phase }}', 'deploy' ) )
+    # condition: eq('${{ parameters.phase }}', 'docker')
+    displayName: Docker Stage
+    jobs:
+      # - template: jobs/createDockerImage.yml@itay-devops-tools
+      - template: jobs/buildDockerImageLocaly.yml@itay-devops-tools
+#---------- Deploy Image to K8S ------------#
+  - stage: DeployStage
+    condition: or ( eq('${{ parameters.phase }}', 'deploy') , eq('${{ parameters.phase }}', 'build_deploy' ))
+    displayName: Deploy Stage
+    jobs:
+      - template: jobs/k8sMinikubeDeploy.yml@itay-devops-tools
+        parameters:
+          environment: '${{ parameters.environment }}'
+          phase: '${{ parameters.phase }}'
